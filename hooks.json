@@ -1,0 +1,20 @@
+﻿{
+  "unlazygravity-stop": {
+    "Stop": [
+      {
+        "type": "command",
+        "command": "node hooks/stop-hook.mjs",
+        "timeout": 15
+      }
+    ]
+  },
+  "unlazygravity-drift": {
+    "PostInvocation": [
+      {
+        "type": "command",
+        "command": "node hooks/drift-hook.mjs",
+        "timeout": 10
+      }
+    ]
+  }
+}
