@@ -6,7 +6,7 @@ An AI agent cannot declare a task done. It can only prove it — gate by gate,
 with graded evidence, surviving an adversarial verifier. The moment it tries to
 stop with unmet gates, Antigravity's Stop hook blocks it and sends it back to work.
 
-Built exclusively for [Antigravity](https://antigravity.dev) using its native
+Built exclusively for [Antigravity]([https://antigravity.dev](https://antigravity.google/)) using its native
 `hooks.json` lifecycle system.
 
 ---
