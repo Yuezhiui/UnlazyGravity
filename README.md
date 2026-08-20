@@ -195,7 +195,7 @@ Scope: Users can sign in with email/password and receive a JWT.
 
 ## License
 
-MIT — Copyright (c) 2026 Yue
+MIT — Copyright (c) 2026 Zhi
 
 See [LICENSE](LICENSE) for full text.
 
