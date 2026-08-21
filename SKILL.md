@@ -1,4 +1,4 @@
-﻿---
+---
 name: unlazygravity
 description: >-
   Anti-laziness execution discipline built exclusively for Antigravity.
@@ -7,7 +7,7 @@ description: >-
   The agent cannot stop until every gate is proven — not claimed, not assumed,
   proven. Triggers on /unlazygravity, "gates", "tree N", "do not stop until
   done", or any task where fake finishing is unacceptable.
-version: 1.0.0
+version: 1.1.0
 platform: antigravity
 license: MIT
 ---
