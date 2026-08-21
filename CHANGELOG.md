@@ -1,4 +1,16 @@
-﻿# Changelog
+# Changelog
+
+## [1.1.0] — 2026-08-21
+
+### Enhanced
+
+- `hooks/stop-hook.mjs`:
+  - Added full Grade A–D evidence auditing with Skeptic PASS enforcement for Grade C items.
+  - Added explicit instructions for `ABANDON: <gate-id> <reason>` escape hatch in stop block notifications.
+  - Added robust JSON payload error handling to prevent hook crashes.
+- `hooks/drift-hook.mjs`:
+  - Added recursive filesystem scan up to depth 4 to catch file modifications in nested directory trees.
+  - Added ignore patterns for build/cache/vendor directories (`.git`, `node_modules`, `.next`, `dist`, `build`, etc.).
 
 ## [1.0.0] — 2026-08-20
 

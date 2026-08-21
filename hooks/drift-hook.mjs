@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env node
+#!/usr/bin/env node
 // drift-hook.mjs — Antigravity PostInvocation hook for UnlazyGravity.
 // Detects when an agent is recapping/summarizing instead of working.
 // Injects a warning after consecutive invocations with no file modifications.
@@ -12,14 +12,24 @@ import { tmpdir } from "node:os";
 
 const DRIFT_THRESHOLD = 3;        // invocations with no file change before warning
 const DRIFT_STATE_FILE = join(tmpdir(), "unlazygravity-drift.json");
+const IGNORE_DIRS = new Set([
+  ".git", "node_modules", ".gemini", ".next", "dist", "build", "out",
+  ".turbo", ".cache", "coverage", ".idea", ".vscode"
+]);
 
 let raw = "";
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", chunk => { raw += chunk; });
 process.stdin.on("end", () => {
-  const input = JSON.parse(raw || "{}");
+  let input = {};
+  try {
+    input = JSON.parse(raw || "{}");
+  } catch (_) {
+    process.stdout.write(JSON.stringify({ injectSteps: [] }));
+    return;
+  }
+
   const workspacePaths = input.workspacePaths ?? [];
-  const invocationNum = input.invocationNum ?? 0;
 
   // Load or init drift state
   let state = { lastMtime: 0, driftCount: 0, conversationId: input.conversationId };
@@ -31,23 +41,29 @@ process.stdin.on("end", () => {
     } catch (_) {}
   }
 
-  // Get the most recent mtime across all workspace files (shallow scan)
-  function latestMtime(dir) {
+  // Recursive mtime scan (up to depth 4 to remain fast & lightweight)
+  function scanDirMtime(dir, depth = 0) {
+    if (depth > 4) return 0;
     let latest = 0;
     try {
-      for (const entry of readdirSync(dir, { withFileTypes: true })) {
-        if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
+      const entries = readdirSync(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (IGNORE_DIRS.has(entry.name) || entry.name.startsWith(".git")) continue;
         const full = join(dir, entry.name);
         try {
-          const mt = statSync(full).mtimeMs;
-          if (mt > latest) latest = mt;
+          const st = statSync(full);
+          if (st.mtimeMs > latest) latest = st.mtimeMs;
+          if (entry.isDirectory()) {
+            const subLatest = scanDirMtime(full, depth + 1);
+            if (subLatest > latest) latest = subLatest;
+          }
         } catch (_) {}
       }
     } catch (_) {}
     return latest;
   }
 
-  const currentMtime = Math.max(...workspacePaths.map(latestMtime));
+  const currentMtime = Math.max(0, ...workspacePaths.map(p => scanDirMtime(p)));
   const filesChanged = currentMtime > state.lastMtime;
 
   if (filesChanged) {
@@ -71,7 +87,7 @@ process.stdin.on("end", () => {
   // Drift detected — inject forceful redirect
   const warning = [
     "━━ UNLAZYGRAVITY DRIFT ALERT ━━",
-    `${state.driftCount} consecutive invocations with no file changes detected.`,
+    `${state.driftCount} consecutive invocations with no workspace file modifications detected.`,
     "You are recapping, summarizing, or planning instead of working.",
     "STOP. Open a file. Make a change. Run a command.",
     "Talking about work is not work. Check your GATES.md and act on the next unmet gate.",

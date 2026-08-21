@@ -1,6 +1,6 @@
-﻿#!/usr/bin/env node
+#!/usr/bin/env node
 // stop-hook.mjs — Antigravity Stop hook for UnlazyGravity.
-// Fires when the agent tries to terminate. Blocks if any gate is unmet.
+// Fires when the agent tries to terminate. Blocks if any gate is unmet or lacks proof.
 // Original work. MIT License. Copyright (c) 2026 Yue
 //
 // Contract: reads JSON from stdin, writes JSON to stdout.
@@ -14,7 +14,14 @@ let raw = "";
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", chunk => { raw += chunk; });
 process.stdin.on("end", () => {
-  const input = JSON.parse(raw || "{}");
+  let input = {};
+  try {
+    input = JSON.parse(raw || "{}");
+  } catch (_) {
+    write({ decision: "allow" });
+    return;
+  }
+
   const workspacePaths = input.workspacePaths ?? [];
 
   // Only enforce on clean model-initiated stops.
@@ -30,81 +37,122 @@ process.stdin.on("end", () => {
     if (existsSync(top)) found.push(top);
     const gdir = join(dir, "gates");
     if (existsSync(gdir)) {
-      for (const f of readdirSync(gdir)) {
-        if (f.endsWith(".md")) found.push(join(gdir, f));
-      }
+      try {
+        for (const f of readdirSync(gdir)) {
+          if (f.endsWith(".md")) found.push(join(gdir, f));
+        }
+      } catch (_) {}
     }
     return found;
   }
 
-  // Returns { unmet: string[], dGrades: string[] } for a gate file
+  // Returns { unmet: string[], dGrades: string[], pendingSkeptic: string[] }
   function auditFile(filePath) {
     const content = readFileSync(filePath, "utf8");
     const lines = content.split("\n");
     const unmet = [];
     const dGrades = [];
+    const pendingSkeptic = [];
+    const abandoned = new Set();
+
+    // Check for abandoned gates
+    for (const line of lines) {
+      const am = line.match(/^ABANDON:\s*(\S+)/);
+      if (am) abandoned.add(am[1]);
+    }
 
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
 
-      // Unchecked gate
-      if (/^- \[ \]/.test(line)) {
-        unmet.push(`  Unchecked: "${line.replace(/^- \[ \]\s*/, "").trim()}"`);
+      // Match gate line: - [ ] or - [x]
+      const gateMatch = line.match(/^- \[( |x|X)\] (.+)$/);
+      if (!gateMatch) continue;
+
+      const isChecked = gateMatch[1].toLowerCase() === "x";
+      const gateTitle = gateMatch[2].trim();
+      const gateId = gateTitle.match(/^(\S+?):/)?.[1] ?? `L${i + 1}`;
+
+      // If marked abandoned, skip check
+      if (abandoned.has(gateId)) continue;
+
+      // 1. Unchecked gate
+      if (!isChecked) {
+        unmet.push(`  ☐ Unchecked: "${gateTitle}"`);
         continue;
       }
 
-      // EVIDENCE pending or empty on a checked gate
-      if (/^- \[x\]/i.test(line)) {
-        const evidenceLine = lines.slice(i + 1, i + 6)
-          .find(l => /^\s{2,}EVIDENCE:/.test(l));
-        if (evidenceLine) {
-          const ev = evidenceLine.replace(/^\s+EVIDENCE:\s*/, "").trim();
-          if (!ev || ev === "pending") {
-            unmet.push(`  Missing evidence: "${line.replace(/^- \[x\]\s*/i, "").trim()}"`);
-          }
-          // Grade D detection
-          const isVague = /(looks good|verified|should work|I think|checked it)/i.test(ev);
-          const isTooShort = ev.length < 20 && ev !== "pending" && ev !== "";
-          if (isVague || isTooShort) {
-            dGrades.push(`  Grade-D evidence: "${line.replace(/^- \[x\]\s*/i, "").trim()}"`);
-          }
+      // 2. Checked gate — inspect the evidence block
+      const followingLines = lines.slice(i + 1, i + 8);
+      const evidenceLine = followingLines.find(l => /^\s{2,}EVIDENCE:/.test(l));
+      const skepticLine = followingLines.find(l => /^\s{2,}SKEPTIC:/.test(l));
+
+      if (!evidenceLine) {
+        unmet.push(`  ❌ Missing EVIDENCE line: "${gateTitle}"`);
+        continue;
+      }
+
+      const ev = evidenceLine.replace(/^\s+EVIDENCE:\s*/, "").trim();
+
+      if (!ev || ev === "pending") {
+        unmet.push(`  ❌ EVIDENCE is pending: "${gateTitle}"`);
+        continue;
+      }
+
+      // Grade D Detection (vague claims, conversational reassurance, or missing structure)
+      const isVague = /(looks good|verified|should work|I think|checked it|tested manually|working fine|verified manually)/i.test(ev);
+      const isTooShort = ev.length < 20 && !ev.startsWith("[A]") && !ev.startsWith("[B]");
+      const isExplicitGradeD = ev.startsWith("[D]");
+
+      if (isExplicitGradeD || isVague || isTooShort) {
+        dGrades.push(`  ⚠️  Grade-D Evidence (Unacceptable): "${gateTitle}"\n     Given: "${ev}"`);
+        continue;
+      }
+
+      // Grade C Detection: If it's Grade C or assertion, verify Skeptic PASS
+      const isGradeC = ev.startsWith("[C]") || (!ev.startsWith("[A]") && !ev.startsWith("[B]") && !/\w+[\\/]\w+.*:\d+/.test(ev));
+      if (isGradeC) {
+        const skepticPass = skepticLine && /SKEPTIC:\s*PASS/i.test(skepticLine);
+        if (!skepticPass) {
+          pendingSkeptic.push(`  🔍 Grade-C requires Adversarial Skeptic: "${gateTitle}"\n     Must invoke 'skeptic' subagent and record "SKEPTIC: PASS — <reason>"`);
         }
       }
     }
 
-    return { unmet, dGrades };
+    return { unmet, dGrades, pendingSkeptic };
   }
 
-  const allUnmet = [];
-  const allDGrades = [];
+  const allProblems = [];
 
   for (const wsPath of workspacePaths) {
     for (const gf of findGateFiles(wsPath)) {
       try {
-        const { unmet, dGrades } = auditFile(gf);
-        if (unmet.length > 0) allUnmet.push(...unmet.map(u => `[${gf}]\n${u}`));
-        if (dGrades.length > 0) allDGrades.push(...dGrades.map(d => `[${gf}]\n${d}`));
+        const { unmet, dGrades, pendingSkeptic } = auditFile(gf);
+        if (unmet.length > 0) allProblems.push(...unmet.map(u => `[${gf}]\n${u}`));
+        if (dGrades.length > 0) allProblems.push(...dGrades.map(d => `[${gf}]\n${d}`));
+        if (pendingSkeptic.length > 0) allProblems.push(...pendingSkeptic.map(s => `[${gf}]\n${s}`));
       } catch (_) {
         // Unreadable gate file — skip, don't block
       }
     }
   }
 
-  if (allUnmet.length === 0 && allDGrades.length === 0) {
+  if (allProblems.length === 0) {
     write({ decision: "allow" });
     return;
   }
 
-  const problems = [...allUnmet, ...allDGrades];
   const reason = [
     "━━ UNLAZYGRAVITY GATE BLOCK ━━",
-    `${problems.length} problem(s) prevent completion:`,
-    ...problems.slice(0, 8),
-    problems.length > 8 ? `  ... and ${problems.length - 8} more.` : "",
+    `${allProblems.length} unresolved gate item(s) prevent task completion:`,
+    ...allProblems.slice(0, 8),
+    allProblems.length > 8 ? `  ... and ${allProblems.length - 8} more.` : "",
     "",
-    "Run: node <unlazygravity>/scripts/gate-check.mjs",
-    "Fix all gates. Replace every EVIDENCE: pending with real proof.",
-    "Grade D evidence (vague claims) is not accepted.",
+    "ACTIONS REQUIRED:",
+    "1. Complete unmet gates and provide Grade A (command) or Grade B (file:line) evidence.",
+    "2. For Grade C gates, invoke the 'skeptic' subagent and record 'SKEPTIC: PASS'.",
+    "3. Grade D evidence (vague assertions) is auto-rejected.",
+    "4. [ESCAPE HATCH]: If a gate is genuinely impossible or blocked by external infra,",
+    "   add 'ABANDON: <gate-id> <reason>' to GATES.md rather than guessing.",
     "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
   ].filter(Boolean).join("\n");
 
